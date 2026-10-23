@@ -3217,6 +3217,18 @@ EOF
     fi
     T="$ORCA_TERMINAL"
     ;;
+  sandcastle)
+    # Sandcastle runs the agent inside a Docker container via sandcastle.run().
+    # Acquire the worktree directly, write launch-brief.md, and launch
+    # sandcastle.run() in one call. No terminal pane is created.
+    WT=$(fm_backend_sandcastle_create_task "" "$W" "$PROJ_ABS" "") || exit 1
+    [ -n "$WT" ] && [ -d "$WT" ] || {
+      echo "error: sandcastle create_task returned no valid worktree" >&2
+      exit 1
+    }
+    # Sandcastle has no persistent endpoint target; T stays unset.
+    T=""
+    ;;
   esac
 fi
 if [ "$KIND" = secondmate ]; then
@@ -3237,6 +3249,10 @@ spawn_send_text_line() { # <target> <text>
   zellij) fm_backend_zellij_send_text_line "$1" "$2" "$W" ;;
   orca) fm_backend_orca_send_text_line "$1" "$2" ;;
   cmux) fm_backend_cmux_send_text_line "$1" "$2" "$W" ;;
+  sandcastle)
+    # Sandcastle runs the agent via sandcastle.run(), not via terminal text.
+    # Text sent here is a no-op; the brief rides the sandcastle invocation.
+    ;;
   esac
 }
 spawn_current_path() { # <target>
@@ -3245,6 +3261,10 @@ spawn_current_path() { # <target>
   herdr) fm_backend_herdr_current_path "$1" ;;
   zellij) fm_backend_zellij_current_path "$1" "$W" ;;
   cmux) fm_backend_cmux_current_path "$1" "$W" ;;
+  sandcastle)
+    # Sandcastle has no pane to query; return the recorded worktree path.
+    printf '%s' "${WT:-}"
+    ;;
   esac
 }
 spawn_send_literal() { # <target> <text>
@@ -3254,6 +3274,9 @@ spawn_send_literal() { # <target> <text>
   zellij) fm_backend_zellij_send_literal "$1" "$2" "$W" ;;
   orca) fm_backend_orca_send_literal "$1" "$2" ;;
   cmux) fm_backend_cmux_send_literal "$1" "$2" "$W" ;;
+  sandcastle)
+    # Sandcastle has no terminal to write literals to.
+    ;;
   esac
 }
 spawn_send_key() { # <target> <key>
@@ -3263,6 +3286,9 @@ spawn_send_key() { # <target> <key>
   zellij) fm_backend_zellij_send_key "$1" "$2" "$W" ;;
   orca) fm_backend_orca_send_key "$1" "$2" ;;
   cmux) fm_backend_cmux_send_key "$1" "$2" "$W" ;;
+  sandcastle)
+    # Sandcastle has no terminal to send keys to.
+    ;;
   esac
 }
 
@@ -3593,7 +3619,7 @@ if [ "$RELAUNCH" -eq 1 ]; then
     fi
   fi
   [ "$KIND" = secondmate ] || validate_spawn_worktree "relaunch" "$T"
-elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
+elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ] && [ "$BACKEND" != sandcastle ]; then
   spawn_send_text_line "$WT_TARGET" 'treehouse get'
 
   # Wait for the treehouse subshell: the pane's cwd moves from the project to the worktree.
@@ -4492,13 +4518,15 @@ if [ "$LAUNCH_ENV_ENABLED" = 1 ]; then
   LAUNCH="$LAUNCH_ENV_PREFIX /bin/sh -c $(shell_quote "$LAUNCH")"
 fi
 sleep 0.3
-spawn_send_literal "$T" "$LAUNCH"
-sleep 0.3
-if [ "${HERDR_PROJECTED:-0}" -eq 1 ]; then
-  HERDR_PROJECTION_ABORT_CLEANUP=0
-  spawn_herdr_presentation_order_lock_release
+if [ "$BACKEND" != sandcastle ]; then
+  spawn_send_literal "$T" "$LAUNCH"
+  sleep 0.3
+  if [ "${HERDR_PROJECTED:-0}" -eq 1 ]; then
+    HERDR_PROJECTION_ABORT_CLEANUP=0
+    spawn_herdr_presentation_order_lock_release
+  fi
+  spawn_send_key "$T" Enter
 fi
-spawn_send_key "$T" Enter
 if [ "$HARNESS" = kimi ]; then
   if ! kimi_wait_for_ready; then
     kimi_spawn_fail "$KIMI_READY_FAILURE_DETAIL"
