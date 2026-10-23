@@ -484,8 +484,19 @@ case "$*" in
 esac
 case "${1:-}" in
   display-message) printf 'firstmate\n'; exit 0 ;;
-  list-windows) exit 0 ;;
-  has-session|new-session|new-window|kill-window) exit 0 ;;
+  list-windows)
+    [ ! -s "$FM_FAKE_AGY_STATE.window" ] || cat "$FM_FAKE_AGY_STATE.window"
+    exit 0 ;;
+  new-window)
+    name=
+    previous=
+    for arg in "$@"; do
+      [ "$previous" = -n ] && name=$arg
+      previous=$arg
+    done
+    printf '%s\n' "$name" > "$FM_FAKE_AGY_STATE.window"
+    exit 0 ;;
+  has-session|new-session|kill-window) exit 0 ;;
   send-keys)
     literal=
     prev=
@@ -494,6 +505,9 @@ case "${1:-}" in
       prev=$arg
     done
     if [ -n "$literal" ]; then
+      case "$literal" in
+        ". '"*"'") staged=${literal#". '"}; staged=${staged%"'"}; [ ! -f "$staged" ] || literal=$(cat "$staged") ;;
+      esac
       case "$literal" in
         *--prompt-interactive*)
           printf '%s\n' "$literal" >> "$FM_FAKE_LAUNCH_LOG"
@@ -812,7 +826,7 @@ test_agy_unregistered_path_without_a_dialog_fails_the_spawn() {
     || fail "the gate must not send Enter into a pane that shows no dialog"
   assert_contains "$(cat "$CASE_DIR/tmux-calls.log")" "kill-window" \
     "a failed agy readiness gate left its launched endpoint running"
-  assert_grep 'failed: agy never showed its folder-trust dialog' "$HOME_DIR/state/$id.status" \
+  assert_grep 'failed: agy never showed its folder-trust dialog' <(sed -E 's/ \[at=[0-9]+\]//' "$HOME_DIR/state/$id.status") \
     "a failed agy readiness gate did not record the failure in the task status"
   pass "fm-spawn: a busy verdict on an unregistered path without a dialog fails and closes the endpoint"
 }

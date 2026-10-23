@@ -66,9 +66,10 @@
 # auto-arm (bin/fm-claude-stop-autoarm.sh), which fires on the same Stop event:
 #   1. a live identity-matched watcher with a fresh beacon - or, in away mode, a
 #      live identity-matched daemon with a fresh beacon - allows immediately;
-#   2. an unhealthy session with a verified live session-lock owner outside its
-#      harness ancestry exits with a read-only diagnostic instead of blocking a
-#      session that cannot repair supervision without stealing ownership;
+#   2. an unhealthy session with a verified live session-lock owner it does not
+#      own under the shared ancestry-or-trusted-id verdict exits with a read-only
+#      diagnostic instead of blocking a session that cannot repair supervision
+#      without stealing ownership;
 #   3. otherwise wait briefly (FM_CLAUDE_AUTOARM_SYNC_WAIT_MS, default 800ms)
 #      for the auto-arm to claim this home (a live OPEN generation claim in the
 #      state/.claude-autoarm-epoch ledger - fm_autoarm_claim_open - or a legacy
@@ -113,6 +114,33 @@ for arg in "$@"; do
     *) echo "usage: $(basename "$0") [--claude|--cursor]" >&2; exit 2 ;;
   esac
 done
+
+# A Claude secondmate's home carries .fm-busy-stop (bin/fm-spawn.sh), and this
+# guard is then the only Stop writer of the parent home's busy record for that
+# gen: every exit records the Stop's outcome, busy when exit 2 blocks it into a
+# continuation and idle otherwise. Claude runs Stop hooks in parallel, so a
+# second Stop writer could land after this one and flip the verdict.
+# shellcheck disable=SC2329 # Invoked by the EXIT trap below.
+record_parent_stop_state() {
+  local status=$? pointer="$FM_ROOT/.fm-busy-stop" key value writer='' state='' id='' gen='' verdict=idle event=stop
+  [ "$CLAUDE_MODE" -eq 1 ] || return 0
+  [ -f "$pointer" ] && [ ! -L "$pointer" ] || return 0
+  while IFS='=' read -r key value; do
+    case "$key" in
+      writer) writer=$value ;;
+      state) state=$value ;;
+      id) id=$value ;;
+      gen) gen=$value ;;
+    esac
+  done < "$pointer"
+  [ -n "$state" ] && [ -n "$id" ] && [ -n "$gen" ] && [ -x "$writer" ] || return 0
+  if [ "$status" -eq 2 ]; then
+    verdict=busy
+    event=stop-blocked
+  fi
+  "$writer" apply "$state" "$id" "$verdict" --gen "$gen" --source claude-hook --event "$event" >/dev/null 2>&1 || true
+}
+trap record_parent_stop_state EXIT
 
 # shellcheck source=bin/fm-supervision-lib.sh
 . "$SCRIPT_DIR/fm-supervision-lib.sh"
@@ -253,8 +281,9 @@ block_stop() {
   exit 2
 }
 
-# A live session outside this process's harness ancestry owns the home lock.
-# This session is read-only and cannot arm or repair supervision without
+# Another verified live session owns the home lock under the shared
+# ancestry-or-trusted-id verdict. This session is read-only and cannot arm or
+# repair supervision without
 # stealing ownership, so blocking its Stop would create an impossible loop.
 # Report the ownership conflict as a diagnostic and let this turn end safely;
 # the owning session remains responsible for restoring the watcher.
@@ -349,14 +378,10 @@ budget_account_current_epoch() {  # [observe|block]
 autoarm_owns_recovery() {
   local pid role outcome age
   fm_watcher_healthy "$STATE" "$WATCH" "$GRACE" "$FM_HOME" && return 0
-  # A live OPEN generation claim owns recovery: the ledger names a live,
-  # identity-matched owner still arming that is not stuck (fm_autoarm_claim_open
-  # in bin/fm-wake-lib.sh owns that predicate). A finished, dead,
-  # identity-mismatched, or stuck claim deliberately fails it and falls
-  # through, because treating such a claim as ownership is what let a dead
-  # watcher go unnoticed for turn after turn; the outcome cases below still
-  # cover a claim that finished moments ago, so a genuine handoff is not
-  # duplicated, while a stale one now reaches the block.
+  # An open generation claim owns recovery; fm_autoarm_claim_open in
+  # bin/fm-wake-lib.sh owns the full predicate, including session reachability.
+  # The outcome cases below still cover a claim that finished moments ago, so
+  # a genuine handoff is not duplicated while a stale claim reaches the block.
   if fm_autoarm_claim_open "$STATE" "$GRACE"; then
     [ ! -e "$FAILURE_NOTICE" ] || budget_account_current_epoch || true
     return 0
